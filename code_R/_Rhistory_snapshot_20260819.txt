@@ -1,0 +1,512 @@
+for (sp in sp_rows) {
+# استخراج وفرة السلالة لعينات البالغين فقط
+abund <- as.numeric(assay_mat[sp, hmp_adult_baseline$sample_id])
+# حساب المتوسط لكل مجموعة
+means <- tapply(abund, grp, mean, na.rm = TRUE)
+# اختبار Kruskal-Wallis الآمن
+kw_p <- tryCatch({ kruskal.test(abund ~ grp)$p.value }, error = function(e) NA)
+# تنظيف اسم السلالة (حذف المسار الطويل وإبقاء الاسم العلمي فقط)
+clean_name <- sub(".*\\|s__", "", sp)
+results_list[[clean_name]] <- data.frame(
+Species      = clean_name,
+Mean_Control = round(unname(means["Control"]), 6),
+Mean_CD      = round(unname(means["CD"]), 6),
+Mean_UC      = round(unname(means["UC"]), 6),
+KW_pvalue    = round(kw_p, 5),
+stringsAsFactors = FALSE
+)
+}
+# 3. دمج النتائج وتطبيق تصحيح الأخطاء (FDR)
+res_df <- do.call(rbind, results_list)
+res_df$FDR_pvalue <- round(p.adjust(res_df$KW_pvalue, method = "BH"), 5)
+# الترتيب حسب الدلالة الإحصائية
+res_df <- res_df[order(res_df$KW_pvalue), ]
+cat("--- نتائج اختبار جميع سلالات Streptococcus (HMP Adults) ---\n")
+print(res_df, row.names = FALSE)
+} else {
+cat("لم يتم العثور على سلالات محددة (Species) تحت جنس Streptococcus.\n")
+}
+# ===== Step 22: verify matrix semantics before any inference =====
+cat("--- 1. dimension mismatch ---\n")
+cat("matrix cols:", ncol(assay_mat), "| metadata rows:", nrow(hmp_meta), "\n")
+extra <- setdiff(colnames(assay_mat), hmp_meta$sample_id)
+cat("cols not in metadata:", length(extra), "->", paste(head(extra, 3), collapse=", "), "\n")
+cat("\n--- 2. units: do samples sum to 100 or 1? ---\n")
+sp_only <- grep("\\|s__", rownames(assay_mat), value = TRUE)
+cat("species-level rows:", length(sp_only), "\n")
+print(summary(colSums(assay_mat[sp_only, ], na.rm = TRUE)))
+cat("\n--- 3. correct genus rows (exact, no children, no Peptostreptococcus) ---\n")
+g_exact <- grep("g__Streptococcus$", rownames(assay_mat), value = TRUE)
+cat("exact genus rows:", length(g_exact), "\n"); print(g_exact)
+cat("\n--- 4. prevalence in the 66 adults ---\n")
+gv <- as.numeric(assay_mat[g_exact[1], hmp_adult_baseline$sample_id])
+cat("non-zero samples:", sum(gv > 0, na.rm = TRUE), "of", length(gv), "\n")
+cat("median:", median(gv, na.rm = TRUE), "| mean:", round(mean(gv, na.rm = TRUE), 4), "\n")
+print(tapply(gv, hmp_adult_baseline$analysis_group,
+function(x) c(n = length(x), nonzero = sum(x > 0), median = median(x))))
+# ===== Step 23: MARS Cohort Streptococcus Signal & Plot =====
+if (!require("ggplot2", quietly = TRUE)) install.packages("ggplot2")
+library(ggplot2)
+stopifnot(exists("mars_md"))
+cat("==========================================\n")
+cat("--- Step 23: Mars Streptococcus Extraction & Plot ---\n")
+cat("==========================================\n")
+# 1. تحديد مستوى المريض الفريد (75 مريضاً كما تأكدنا سابقاً)
+id_col <- grep("^Subject$|subject", names(mars_md), ignore.case = TRUE, value = TRUE)[1]
+mars_one <- mars_md[!duplicated(mars_md[[id_col]]), ]
+# 2. تحديد مصفوفة الوفرة لـ Mars (قم بتعديل NULL إلى اسم المصفوفة لديك إذا كانت منفصلة)
+# مثال: mars_assay <- mars_otu_table
+mars_assay <- NULL
+# محاولة إيجاد الوفرة:
+# الحالة أ: هل Streptococcus مدمجة كعمود في الميتاداتا؟
+strep_col <- grep("Streptococcus", names(mars_one), ignore.case = TRUE, value = TRUE)
+if (length(strep_col) > 0) {
+cat("تم العثور على الوفرة مدمجة في الميتاداتا: عمود", strep_col[1], "\n")
+mars_one$strep_abundance <- as.numeric(mars_one[[strep_col[1]]])
+} else if (!is.null(mars_assay)) {
+# الحالة ب: هل تم توفير مصفوفة منفصلة؟
+sample_col <- grep("^Sample|^Run|^ID", names(mars_one), ignore.case = TRUE, value = TRUE)[1]
+valid_samples <- intersect(mars_one[[sample_col]], colnames(mars_assay))
+cat("تم العثور على", length(valid_samples), "عينة مطابقة مع المصفوفة.\n")
+strep_rows <- grep("Streptococcus", rownames(mars_assay), ignore.case = TRUE, value = TRUE)
+if(length(strep_rows) > 0) {
+strep_vec <- if(length(strep_rows) == 1) mars_assay[strep_rows, ] else colSums(mars_assay[strep_rows, , drop = FALSE])
+mars_one$strep_abundance <- as.numeric(strep_vec[mars_one[[sample_col]]])
+} else {
+stop("لم يتم العثور على Streptococcus في mars_assay.")
+}
+} else {
+stop("❌ الخطوة مطلوبة منك: مصفوفةوفرة Mars غير محددة. يرجى تعيين 'mars_assay' أو قراءتها من الملف.")
+}
+# ===== Step 23a: load raw Mars species table (fread, large file) =====
+sp_path <- "C:/Users/wwwas/OneDrive/Phd/data_raw/02_Metagenomics/MARS_IBS_2020/species.tsv"
+cat("file exists:", file.exists(sp_path),
+"| size:", round(file.size(sp_path)/1024^2, 1), "MB\n")
+mars_sp <- data.table::fread(sp_path, data.table = FALSE)
+cat("dim:", nrow(mars_sp), "x", ncol(mars_sp), "\n\n")
+cat("--- first column name & 3 values ---\n")
+cat(names(mars_sp)[1], "\n"); print(head(mars_sp[[1]], 3))
+cat("\n--- next 3 column names ---\n"); print(names(mars_sp)[2:4])
+cat("\n--- orientation check ---\n")
+cat("row IDs look like taxa:", any(grepl("Streptococcus", mars_sp[[1]])), "\n")
+cat("col names look like taxa:", any(grepl("Streptococcus", names(mars_sp))), "\n")
+# ===== Step 23b: Mars Streptococcus prevalence (raw, GTDB) =====
+cat("--- units: counts or proportions? ---\n")
+rs <- rowSums(mars_sp[, -1], na.rm = TRUE)
+print(summary(rs))
+cat("\n--- Streptococcus columns (GTDB, exact genus field) ---\n")
+strep_cols <- grep(";g__Streptococcus;", names(mars_sp), value = TRUE)
+cat("Streptococcus species columns:", length(strep_cols), "\n")
+cat("Peptostreptococcus wrongly caught:",
+sum(grepl("Peptostreptococcus", strep_cols)), "\n")
+mat <- as.matrix(mars_sp[, strep_cols, drop = FALSE])
+genus_vec <- rowSums(mat, na.rm = TRUE)
+cat("\n--- SAMPLE level (n = 444) ---\n")
+cat("samples with any Streptococcus:", sum(genus_vec > 0), "of", length(genus_vec),
+sprintf("(%.1f%%)", 100*mean(genus_vec > 0)), "\n")
+cat("\n--- SUBJECT level, first sample each (matches HMP baseline design) ---\n")
+first_idx <- !duplicated(mars_md$Subject)
+cat("subjects:", sum(first_idx), "\n")
+gv_sub <- genus_vec[first_idx]
+grp_sub <- mars_md$Study.Group[first_idx]
+cat("subjects with any Streptococcus:", sum(gv_sub > 0),
+sprintf("(%.1f%%)", 100*mean(gv_sub > 0)), "\n\n")
+print(tapply(gv_sub, grp_sub, function(x)
+c(n = length(x), nonzero = sum(x > 0), pct = round(100*mean(x > 0), 1))))
+# ===== Step 24: order check + Mars genus abundance (%) =====
+cat("--- row order check (MUST be TRUE) ---\n")
+ord_ok <- identical(mars_sp$Sample, mars_md$Sample)
+cat("identical(mars_sp$Sample, mars_md$Sample):", ord_ok, "\n")
+cat("any sample mismatch:", sum(mars_sp$Sample != mars_md$Sample), "\n\n")
+if (!ord_ok) {
+cat("STOP: order mismatch — subject-level numbers are invalid.\n")
+} else {
+# Mars is 0-1; multiply by 100 to match HMP's percentage scale
+gv_pct <- genus_vec[first_idx] * 100
+grp    <- mars_md$Study.Group[first_idx]
+cat("--- Streptococcus genus, relative abundance (%) ---\n")
+cat("all subjects (n=75):\n"); print(round(summary(gv_pct), 4))
+cat("\nby group:\n")
+print(round(do.call(rbind, tapply(gv_pct, grp, function(x)
+c(n = length(x), median = median(x), mean = mean(x),
+q25 = quantile(x, .25), q75 = quantile(x, .75)))), 4))
+cat("\n--- side by side with HMP (both %) ---\n")
+cat(sprintf("%-28s %10s %10s\n", "", "Mars", "HMP"))
+cat(sprintf("%-28s %10s %10s\n", "reference species (genus)", "357", "27"))
+cat(sprintf("%-28s %10s %10s\n", "prevalence (subject)", "100%", "32%"))
+cat(sprintf("%-28s %10.4f %10.4f\n", "median abundance %",
+median(gv_pct), 0))
+cat(sprintf("%-28s %10.4f %10.4f\n", "mean abundance %",
+mean(gv_pct), 0.0327))
+}
+# ===== Step 25: name-based matching (correct) =====
+cat("--- coverage check ---\n")
+cat("mars_sp samples:", length(mars_sp$Sample), "| unique:", length(unique(mars_sp$Sample)), "\n")
+cat("mars_md samples:", length(mars_md$Sample), "| unique:", length(unique(mars_md$Sample)), "\n")
+cat("all sp samples present in md:", all(mars_sp$Sample %in% mars_md$Sample), "\n")
+cat("set-identical:", setequal(mars_sp$Sample, mars_md$Sample), "\n\n")
+# name-based alignment: reorder metadata to follow the species table
+idx <- match(mars_sp$Sample, mars_md$Sample)
+cat("NAs in match:", sum(is.na(idx)), "\n")
+md_aligned <- mars_md[idx, ]
+cat("VERIFY identical after alignment:",
+identical(mars_sp$Sample, md_aligned$Sample), "\n\n")
+stopifnot(identical(mars_sp$Sample, md_aligned$Sample))
+# subject-level: first sample per subject, now correctly aligned
+first_idx2 <- !duplicated(md_aligned$Subject)
+gv_pct <- genus_vec[first_idx2] * 100      # Mars is 0-1 -> %
+grp2   <- md_aligned$Study.Group[first_idx2]
+cat("subjects:", sum(first_idx2), "\n")
+print(table(grp2))
+cat("\nsubjects with any Streptococcus:", sum(gv_pct > 0),
+sprintf("(%.1f%%)", 100*mean(gv_pct > 0)), "\n\n")
+cat("--- Streptococcus genus abundance (%) by group ---\n")
+print(round(do.call(rbind, tapply(gv_pct, grp2, function(x)
+c(n = length(x), nonzero = sum(x > 0), median = median(x),
+mean = mean(x), q25 = quantile(x, .25), q75 = quantile(x, .75)))), 4))
+# ===== Step 26: persist the comparability log =====
+outdir <- "C:/Users/wwwas/OneDrive/Phd/results"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+comp_tbl <- data.frame(
+metric = c("reference_species_in_genus", "prevalence_subject_level_pct",
+"median_abundance_pct_overall", "n_subjects", "taxonomic_framework",
+"classifier", "cohort_age_median"),
+Mars_GTDB = c(357, round(100*mean(gv_pct > 0), 1), round(median(gv_pct), 4), 75,
+"GTDB v207", "Kraken2 v2.1.1", 35),
+HMP_MetaPhlAn = c(27, 31.8, 0, 66, "SGB/RefSeq", "MetaPhlAn", 38.5),
+stringsAsFactors = FALSE
+)
+write.csv(comp_tbl, file.path(outdir, "cMD_comparability_assessment.csv"),
+row.names = FALSE)
+mars_grp <- as.data.frame(do.call(rbind, tapply(gv_pct, grp2, function(x)
+c(n = length(x), nonzero = sum(x > 0), median = median(x), mean = mean(x)))))
+mars_grp$group <- rownames(mars_grp)
+write.csv(mars_grp, file.path(outdir, "Mars_Streptococcus_genus_by_group.csv"),
+row.names = FALSE)
+cat("files written:\n")
+print(list.files(outdir, pattern = "cMD_|Mars_Streptococcus", full.names = FALSE))
+print(comp_tbl)
+#!/bin/bash
+# ==============================================================================
+# Script: 01_download_sra.sh
+# Purpose: Defensively download paired-end FASTQ files from NCBI SRA
+# ==============================================================================
+# 1. إعداد المتغيرات والمجلدات
+LIST_FILE="SRR_Acc_List.txt"
+OUT_DIR="raw_fastq"
+THREADS=8
+# التحقق من وجود أداة fasterq-dump
+if ! command -v fasterq-dump &> /dev/null; then
+# ===== RStudio Step 1: Automated & Defensive SRA Download =====
+# 1. إعداد المسارات والمتغيرات
+list_file <- "SRR_Acc_List.txt"  # تأكد أن الملف موجود في مجلد العمل الحالي (Working Directory)
+out_dir <- "raw_fastq"
+threads <- 8
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+# 2. التحقق الدفاعي من وجود الملف وأداة fasterq-dump
+if (!file.exists(list_file)) {
+stop("❌ خطأ: ملف قائمة العينات (SRR_Acc_List.txt) غير موجود في مجلد العمل الحالي.")
+}
+# ===== Quick Fix: Create SRR_Acc_List.txt directly in RStudio =====
+# ضع هنا معرفات العينات الخاصة بالدراسة المستهدفة (مثال افتراضي، استبدلها بالمعرفات الحقيقية)
+srr_vector <- c(
+"SRR12345678",  # عينة 1
+"SRR12345679",  # عينة 2
+"SRR12345680"   # عينة 3
+# أضف بقية المعرفات هنا بين علامات التنصيص مفصولة بفواصل
+)
+# كتابة القائمة تلقائياً إلى ملف SRR_Acc_List.txt في مجلد العمل
+writeLines(srr_vector, "SRR_Acc_List.txt")
+cat("✅ تم إنشاء ملف 'SRR_Acc_List.txt' بنجاح في مجلد العمل الحالي!\n")
+cat("📁 المسار الحالي:", getwd(), "\n")
+cat("📊 إجمالي العينات المضافة في القائمة:", length(srr_vector), "\n")
+# ===== RStudio Step 1: Automated & Defensive SRA Download =====
+# 1. إعداد المسارات والمتغيرات
+list_file <- "SRR_Acc_List.txt"  # تأكد أن الملف موجود في مجلد العمل الحالي (Working Directory)
+out_dir <- "raw_fastq"
+threads <- 8
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+# 2. التحقق الدفاعي من وجود الملف وأداة fasterq-dump
+if (!file.exists(list_file)) {
+stop("❌ خطأ: ملف قائمة العينات (SRR_Acc_List.txt) غير موجود في مجلد العمل الحالي.")
+}
+has_fasterq <- nzchar(Sys.which("fasterq-dump"))
+if (!has_fasterq) {
+stop("❌ خطأ: أداة fasterq-dump غير متوفرة في مسار النظام (PATH).")
+}
+# ===== Diagnostic Check for SRA Toolkit / fasterq-dump on Windows =====
+# 1. البحث في الأماكن الشائعة لتنصيب SRA Toolkit على الويندوز
+possible_paths <- c(
+"C:/sratoolkit/bin/fasterq-dump.exe",
+"C:/Program Files/sratoolkit/bin/fasterq-dump.exe",
+list.files("C:/", pattern = "fasterq-dump\\.exe$", recursive = TRUE, full.names = TRUE)
+)
+valid_paths <- possible_paths[file.exists(possible_paths)]
+if (length(valid_paths) > 0) {
+cat("✅ تم العثور على أداة fasterq-dump في المسار التالي:\n")
+cat(valid_paths[1], "\n")
+fasterq_exe <- valid_paths[1]
+} else {
+cat("❌ أداة fasterq-dump غير مثبتة على جهاز الكومبيوتر.\n")
+}
+# ===== RStudio Step 1b: Direct HTTP Download from ENA (No SRA Toolkit needed) =====
+list_file <- "SRR_Acc_List.txt"
+out_dir   <- "raw_fastq"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+if (!file.exists(list_file)) {
+stop("❌ خطأ: ملف قائمة العينات (SRR_Acc_List.txt) غير موجود.")
+}
+srr_ids <- trimws(readLines(list_file))
+srr_ids <- srr_ids[srr_ids != ""]
+cat("==================================================\n")
+cat("--- بدء التحميل المباشر للعينات (عددها:", length(srr_ids), ") ---\n")
+cat("==================================================\n")
+for (srr in srr_ids) {
+# بناء روابط ENA المباشرة لملفات Paired-end
+# ENA تدعم روابط ftp مباشرة وسريعة للتحميل
+# الروابط تأخذ شكل ftp.sra.ebi.ac.uk/vol1/fastq/SRRxxx/0xx/SRRxxxx/SRRxxxx_1.fastq.gz
+# بناء النمط الخاص بـ ENA لتوليد الرابط تلقائياً بناءً على طول النص لـ SRR
+prefix <- substr(srr, 1, 6)
+subfolder <- if(nchar(srr) == 9) paste0("0", substr(srr, 9, 9)) else paste0(substr(srr, nchar(srr)-1, nchar(srr)), "")
+# بدلاً من تتبع الروابط المعقدة يدوياً، نستخدم API المجاني لـ ENA لجلب رابط التحميل المباشر بدقة
+api_url <- sprintf("https://www.ebi.ac.uk/ena/portal/api/filereport?accession=%s&result=read_run&fields=fastq_ftp", srr)
+cat("🔍 جاري جلب روابط التحميل للعينة:", srr, "...\n")
+meta_info <- tryCatch({
+read.delim(api_url, header = TRUE, stringsAsFactors = FALSE)
+}, error = function(e) NULL)
+if (!is.null(meta_info) && nrow(meta_info) > 0 && nzchar(meta_info$fastq_ftp)) {
+ftp_links <- strsplit(meta_info$fastq_ftp, ";")[[1]]
+for (link in ftp_links) {
+file_name <- basename(link)
+dest_path <- file.path(out_dir, file_name)
+# إذا كان الملف محملاً مسبقاً، نتخخطاه
+if (file.exists(dest_path) && file.size(dest_path) > 1000) {
+cat("⏭️ الملف موجود مسبقاً:", file_name, "\n")
+} else {
+full_url <- paste0("ftp://", link)
+cat("⬇️ جاري تحميل:", file_name, "...\n")
+# استخدام دالة download.file في R مع ضبط بروتوكول الكيرل أو الـ internal
+res <- tryCatch({
+download.file(full_url, destfile = dest_path, mode = "wb", quiet = TRUE)
+0
+}, error = function(e) 1)
+if (res == 0) {
+cat("✅ اكتمل تحميل:", file_name, "\n")
+} else {
+cat("❌ فشل تحميل:", file_name, "\n")
+}
+}
+}
+} else {
+cat("⚠️ تحذير: لم يتم العثور على روابط FTP للعينة", srr, "عبر ENA API.\n")
+}
+}
+cat("🎉 انتهت عملية التحميل المباشر للعينات بنجاح!\n")
+# استبدل هذه القائمة بمعرفات العينات الحقيقية للدراسة المختارة
+real_srr_vector <- c(
+"SRR_REAL_ID_1",
+"SRR_REAL_ID_2",
+"SRR_REAL_ID_3"
+# أضف بقية المعرفات هنا
+)
+writeLines(real_srr_vector, "SRR_Acc_List.txt")
+# ===== RStudio Step 2: Run Kraken2 on Compressed Files (.fastq.gz) =====
+db_path <- "C:/path/to/your/GTDB_v207_kraken2_database" # ضع مسار قاعدة البيانات الصحيح
+in_dir  <- "raw_fastq"
+out_dir <- "kraken_reports"
+threads <- 8
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+# التحقق الدفاعي من وجود Kraken2
+if (nzchar(Sys.which("kraken2")) == FALSE) {
+stop("❌ خطأ: أداة kraken2 غير مثبتة أو غير معرفة في مسار النظام.")
+}
+# ===== Diagnostic Check for Kraken2 Location on Windows =====
+cat("==========================================\n")
+cat--- البحث عن أداة Kraken2 في مسارات Windows / Conda ---\n")
+# ===== Diagnostic Check for Kraken2 Location on Windows =====
+cat("==========================================\n")
+cat("--- البحث عن أداة Kraken2 في مسارات Windows / Conda ---\n")
+cat("==========================================\n")
+# 1. فحص مسار النظام المباشر
+native_path <- nzchar(Sys.which("kraken2"))
+cat("1. هل kraken2 معرف في مسار النظام المباشر؟:", native_path, "\n")
+# 2. البحث في مسارات Conda الشائعة على ويندوز
+conda_paths <- c(
+"C:/ProgramData/miniconda3/Scripts/kraken2.exe",
+"C:/ProgramData/anaconda3/Scripts/kraken2.exe",
+list.files("C:/", pattern = "kraken2(\\.exe)?$", recursive = TRUE, full.names = TRUE)
+)
+valid_conda <- conda_paths[file.exists(conda_paths)]
+if (length(valid_conda) > 0) {
+cat("2. ✅ تم العثور على Kraken2 في مسار Conda:\n", valid_conda[1], "\n")
+kraken_exec <- valid_conda[1]
+} else {
+cat("2. ❌ لم يتم العثور على Kraken2 في مسارات Conda الشائعة.\n")
+}
+# 3. التحقق من توفر نظام الفرعي لـ Linux (WSL)
+has_wsl <- nzchar(Sys.which("wsl"))
+cat("3. هل نظام WSL (Linux on Windows) متاح؟:", has_wsl, "\n")
+# ===== RStudio Step 2 (WSL Version): Run Kraken2 via WSL =====
+# 1. حدد مسار قاعدة بيانات GTDB داخل نظام WSL لديك
+# (مثال: "/home/yourusername/db/gtdb" أو المسار المعتاد لقاعدة البيانات في جهازك)
+wsl_db_path <- "/path/to/your/GTDB_v207_kraken2_database_in_WSL"
+# 2. التحقق الدفاعي من توفر نظام WSL
+if (nzchar(Sys.which("wsl")) == FALSE) {
+stop("❌ خطأ: نظام WSL غير متوفر على هذا الجهاز.")
+}
+# 3. تحويل مسار مجلد العمل الحالي في Windows إلى مسار متوافق مع WSL
+win_wd <- getwd()
+wsl_wd <- sub("^([A-Za-z]):", "/mnt/\\L\\1", win_wd, perl = TRUE)
+wsl_wd <- gsub("\\\\", "/", wsl_wd)
+wsl_in_dir  <- file.path(wsl_wd, "raw_fastq")
+wsl_out_dir <- file.path(wsl_wd, "kraken_reports")
+# إنشاء مجلد التقارير داخل بيئة WSL
+system(sprintf('wsl mkdir -p "%s"', wsl_out_dir))
+dir.create("kraken_reports", showWarnings = FALSE)
+# جلب أسماء الملفات المحملة مسبقاً
+r1_files <- list.files("raw_fastq", pattern = "_1\\.fastq\\.gz$", full.names = FALSE)
+cat("==================================================\n")
+cat("--- بدء تشغيل Kraken2 عبر WSL لـ", length(r1_files), "عينة ---\n")
+cat("==================================================\n")
+for (r1_name in r1_files) {
+srr <- sub("_1\\.fastq\\.gz$", "", r1_name)
+r2_name <- paste0(srr, "_2.fastq.gz")
+wsl_r1     <- file.path(wsl_in_dir, r1_name)
+wsl_r2     <- file.path(wsl_in_dir, r2_name)
+wsl_report <- file.path(wsl_out_dir, paste0(srr, ".report.txt"))
+wsl_output <- file.path(wsl_out_dir, paste0(srr, ".kraken"))
+local_report <- file.path("kraken_reports", paste0(srr, ".report.txt"))
+if (file.exists(local_report) && file.size(local_report) > 100) {
+cat("⏭️ تقرير العينة", srr, "موجود مسبقاً. تم التخطي.\n")
+} else {
+cat("🚀 جاري معالجة العينة عبر WSL:", srr, "...\n")
+# بناء أمر WSL لتشغيل Kraken2 مع دعم الملفات المضغوطة
+cmd <- sprintf('wsl kraken2 --db "%s" --threads 8 --paired --gzip-compressed "%s" "%s" --report "%s" --output "%s"',
+wsl_db_path, wsl_r1, wsl_r2, wsl_report, wsl_output)
+res <- system(cmd)
+# تنظيف وحذف ملف المخرجات الكبير داخل WSL لتوفير مساحة القرص
+system(sprintf('wsl rm -f "%s"', wsl_output))
+if (res == 0) {
+cat("✅ اكتمل تحليل وعرض تقرير العينة بنجاح:", srr, "\n")
+} else {
+cat("❌ حدث خطأ أثناء تشغيل Kraken2 للعينة:", srr, "\n")
+}
+}
+}
+cat("🎉 تمت عملية التصنيف التاكسونومي عبر WSL بنجاح كامل!\n")
+# ===== Step 2.1: Defensive Check for WSL Database Path =====
+# ضع هنا المسار الحقيقي لقاعدة بيانات GTDB داخل WSL
+wsl_db_path <- "/home/your_wsl_username/path_to_gtdb_database"
+cat("🔍 جاري التحقق من وجود قاعدة البيانات داخل WSL...\n")
+check_cmd <- sprintf('wsl test -d "%s" && echo "EXISTS" || echo "NOT_EXISTS"', wsl_db_path)
+check_res <- system(check_cmd, intern = TRUE)
+if (any(grepl("EXISTS", check_res))) {
+cat("✅ قاعدة البيانات موجودة ومتاحة بنجاح داخل بيئة WSL!\n")
+} else {
+cat("❌ خطأ: المسار غير موجود أو لا يمكن الوصول إليه داخل WSL. تأكد من صحة المسار.\n")
+}
+# ===== Automated Finder for Kraken2 / GTDB Database inside WSL =====
+cat("🔍 جاري البحث الآلي عن قاعدة بيانات Kraken2 (ملف hash.k2d) داخل بيئة WSL...\n")
+# البحث عن أي ملف بصمة خاص بـ Kraken2 في بيئة WSL مع تجاهل رسائل الصلاحيات
+find_cmd <- 'wsl find / -name "hash.k2d" 2>/dev/null'
+found_files <- system(find_cmd, intern = TRUE)
+if (length(found_files) > 0) {
+cat("✅ تم العثور على قواعد بيانات Kraken2 في المسارات التالية:\n")
+for (i in seq_along(found_files)) {
+db_dir <- dirname(found_files[i])
+cat(sprintf("[%d] %s\n", i, db_dir))
+}
+# اختيار المسار الأول واكتشافه تلقائياً
+wsl_db_path <- dirname(found_files[1])
+cat("\n💡 تم تعيين wsl_db_path تلقائياً إلى المسار:\n", wsl_db_path, "\n")
+} else {
+cat("❌ لم يتم العثور على أي قاعدة بيانات Kraken2 في نظام WSL.\n")
+cat("تأكد من أنك قمت بنسخ أو تحميل قاعدة البيانات داخل بيئة اللينكس.\n")
+}
+# ===== Option: Direct Windows-to-WSL Path Conversion =====
+# 1. ضع هنا مسار مجلد قاعدة البيانات كما تراه في ويندوز تماماً
+win_db_path <- "C:/path/to/your/GTDB_v207_kraken2_database"
+# 2. تحويله تلقائياً وبرمجياً إلى مسار WSL الصحيح (/mnt/c/...)
+wsl_db_path <- sub("^([A-Za-z]):", "/mnt/\\L\\1", win_db_path, perl = TRUE)
+wsl_db_path <- gsub("\\\\", "/", wsl_db_path)
+cat("💡 مسار WSL المعرّف تلقائياً هو:\n", wsl_db_path, "\n\n")
+# 3. التحقق الفوري والدفاعي من صحة المسار داخل البيئة
+cat("🔍 جاري فحص الاتصال بقاعدة البيانات عبر WSL...\n")
+check_cmd <- sprintf('wsl test -d "%s" && echo "EXISTS" || echo "NOT_EXISTS"', wsl_db_path)
+check_res <- tryCatch({
+system(check_cmd, intern = TRUE)
+}, error = function(e) "NOT_EXISTS")
+if (any(grepl("EXISTS", check_res))) {
+cat("✅ قاعدة البيانات متاحة، متصلة، وجاهزة تماماً للاستخدام عبر WSL!\n")
+cat("🚀 يمكنك الآن تشغيل سكريبت تصنيف Kraken2 وأنت مطمئن تماماً.\n")
+} else {
+cat("❌ خطأ: المسار غير موجود. يرجى التأكد من كتابة مسار ويندوز الصحيح لقاعدة البيانات.\n")
+}
+library(data.table)
+meta_mars <- fread("data_raw/02_Metagenomics/MARS_IBS_2020/metadata.tsv",
+data.table = FALSE)
+cat("DIMENSIONS:", nrow(meta_mars), "rows x", ncol(meta_mars), "cols\n\n")
+cat("COLUMN NAMES:\n")
+print(names(meta_mars))
+cat("\nFIRST 3 ROWS:\n")
+print(head(meta_mars, 3))
+cat("=== STUDY.GROUP LEVELS (raw) ===\n")
+print(table(meta_mars$Study.Group, useNA = "ifany"))
+cat("\n=== SAMPLES vs SUBJECTS ===\n")
+cat("Total rows (samples):", nrow(meta_mars), "\n")
+cat("Unique Sample IDs   :", length(unique(meta_mars$Sample)), "\n")
+cat("Unique Subject IDs  :", length(unique(meta_mars$Subject)), "\n")
+cat("\n=== SUBJECTS PER GROUP (not samples) ===\n")
+subj_grp <- unique(meta_mars[, c("Subject", "Study.Group")])
+cat("Rows in subject-level table:", nrow(subj_grp), "\n")
+print(table(subj_grp$Study.Group))
+cat("\n=== SAMPLES PER SUBJECT (distribution) ===\n")
+print(table(table(meta_mars$Subject)))
+cat("=== data_processed CONTENTS ===\n")
+for (d in c("data_processed/01_Transcriptomics",
+"data_processed/02_Metagenomics",
+"data_processed/03_Metabolomics",
+"data_processed")) {
+cat("\n--", d, "--\n")
+f <- list.files(d, full.names = FALSE)
+if (length(f) == 0) cat("(empty or does not exist)\n") else print(f)
+}
+cat("\n=== ANY FILE MENTIONING 'match' or 'core' ANYWHERE ===\n")
+hits <- list.files(".", pattern = "match|core|MOFA|integrat",
+recursive = TRUE, ignore.case = TRUE)
+if (length(hits) == 0) cat("NONE FOUND\n") else print(hits)
+# 1) جدول تركيب النواة
+t1_core <- read.csv("results/thesis_tables_source/T1_core_composition.csv",
+stringsAsFactors = FALSE)
+cat("=== T1_core_composition.csv ===\n")
+print(t1_core)
+# 2) ملف النواة الخام — في بيئة معزولة كي لا نلوّث الجلسة
+env_core <- new.env()
+load("data_processed/TriOmics_core40_raw.RData", envir = env_core)
+cat("\n=== OBJECTS INSIDE TriOmics_core40_raw.RData ===\n")
+for (nm in ls(env_core)) {
+ob <- get(nm, envir = env_core)
+cat("\n*", nm, "| class:", class(ob)[1], "\n")
+if (is.matrix(ob) || is.data.frame(ob)) {
+cat("  dim:", dim(ob)[1], "x", dim(ob)[2], "\n")
+} else if (is.vector(ob) || is.factor(ob)) {
+cat("  length:", length(ob), "\n")
+print(table(ob, useNA = "ifany"))
+}
+}
+list.files("C:/Users/wwwas/OneDrive/Phd/results_figures",
+pattern = "\\.png$|\\.tiff$", full.names = TRUE)
+ggsave("Fig1.tiff", plot = p1, dpi = 600,
+width = 180, units = "mm", compression = "lzw")
+imgs <- list.files("C:/Users/wwwas/OneDrive/Phd",
+pattern = "\\.(png|tiff|tif|jpg|pdf|svg)$",
+recursive = TRUE, full.names = TRUE,
+ignore.case = TRUE)
+cat("عدد ملفّات الصور:", length(imgs), "\n\n")
+if (length(imgs)) {
+info <- file.info(imgs)
+out <- data.frame(path = imgs,
+KB   = round(info$size / 1024),
+date = format(info$mtime, "%Y-%m-%d"))
+print(out[order(-out$KB), ][1:min(30, nrow(out)), ], row.names = FALSE)
+}

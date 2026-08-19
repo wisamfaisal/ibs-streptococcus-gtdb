@@ -1,0 +1,4 @@
+"analysis","n","q_lt_05","positive","ci_excl0","beta_med","sign_p"
+"A1: D vs C (n=74, Group+Age)",74,1,18,13,1.077,3.81e-06
+"A3: D vs H (n=53, Group+Age+Sex)",53,18,18,18,1.961,3.81e-06
+"A1b: D vs C females (n=40, Group+Age)",40,0,18,10,1.044,3.81e-06

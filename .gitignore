@@ -1,0 +1,16 @@
+# raw third-party data - download from original repositories
+data_raw/
+
+# large or superseded outputs
+results/**/fits/
+results/_archive_superseded/
+*.RData
+
+# flagged, must never be published
+*TRUNCATED*
+PRJNA612180_metadata.RData
+
+# session artefacts
+.Rhistory
+.Rproj.user/
+.Rdata
