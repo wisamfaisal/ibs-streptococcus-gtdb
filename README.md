@@ -48,4 +48,7 @@ The processed CLR matrix is included so that `02`-`04` run without the
 
 ## Citation
 
-Alshammari WFW, Razila S. *Manuscript under review.*
+Wadi WF, Razila S. *Manuscript under review.*
+
+Wisam Faisal Wadi — ORCID [0009-0009-8814-4060](https://orcid.org/0009-0009-8814-4060)
+Advanced Medical and Dental Institute, Universiti Sains Malaysia.
