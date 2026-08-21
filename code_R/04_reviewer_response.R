@@ -24,32 +24,38 @@ ols <- function(X, M, rhs, term) {
   f  <- lm(as.formula(paste("Y ~", rhs)), data = M)
   mm <- model.matrix(f); B <- coef(f); iv <- solve(crossprod(mm))
   dfr <- nrow(M) - ncol(mm); s2 <- colSums(residuals(f)^2) / dfr
-  se <- sqrt(iv[term, term] * s2); b <- B[term, ]
-  data.frame(feature = colnames(X), beta = b, se = se,
-             ci_lo = b - qt(.975, dfr) * se, ci_hi = b + qt(.975, dfr) * se,
-             pval = 2 * pt(-abs(b / se), dfr), df = dfr, row.names = NULL)
+  # every coefficient the model returns, so BH below spans the full family
+  terms <- rownames(B)[-1]
+  all <- do.call(rbind, lapply(terms, function(k) {
+    se <- sqrt(iv[k, k] * s2); b <- B[k, ]
+    data.frame(feature = colnames(X), term = k, beta = b, se = se,
+               ci_lo = b - qt(.975, dfr) * se, ci_hi = b + qt(.975, dfr) * se,
+               pval = 2 * pt(-abs(b / se), dfr), df = dfr, row.names = NULL)
+  }))
+  all$qval <- p.adjust(all$pval, "BH")
+  attr(all, "family_size") <- nrow(all)
+  out <- all[all$term == term, ]
+  attr(out, "family_size") <- nrow(all)
+  out
 }
 
-# Multiple-testing scope for the confirmatory analyses
-# ----------------------------------------------------
-# BH is applied within each contrast separately, i.e. a family of 4,795
-# features per hypothesis. This differs from the primary model, where
-# MaAsLin2 corrected across all 14,385 coefficients it returned (verified
-# in 03_verify_BH_scope.R). The wider scope is not available here: A3 and
-# A1b compare two groups only, so no second group contrast exists to
-# include. A per-contrast family is the only scope defined identically
-# across all three analyses. The scope affects how many lineages cross the
-# threshold individually (1 at 9,590 vs 3 at 4,795 for A1) but not the
-# direction, the confidence intervals, or the sign test, which are the
-# quantities the conclusions rest on.
+# Multiple-testing scope
+# -----------------------
+# BH is applied across every coefficient the model returns, matching the
+# family used by MaAsLin2 in the primary model and verified empirically in
+# 03_verify_BH_scope.R. Each model here returns three coefficients per
+# feature, so the family is 3 x 4,795 = 14,385 tests, the same denominator
+# as the primary model. Correcting within a single contrast (4,795) would
+# use a narrower family than the analysis it is compared against.
 
 report <- function(r, lab, n) {
-  k <- is18(r$feature); q <- p.adjust(r$pval, "BH")
-  cat(sprintf("%-32s n=%-3d q<.05=%-2d pos=%-2d CI>0=%-2d med=%.2f sign_p=%s\n",
-      lab, n, sum(q[k] < .05), sum(r$beta[k] > 0), sum(r$ci_lo[k] > 0),
-      median(r$beta[k]),
-      signif(binom.test(sum(r$beta[k] > 0), 18, .5,
-                        alternative = "greater")$p.value, 3)))
+  k <- is18(r$feature); q <- r$qval
+  # No sign test: with 18 of 18 positive the p-value is 0.5^18 by construction
+  # and carries no information about the data. Direction counts and intervals
+  # are reported instead.
+  cat(sprintf("%-32s n=%-3d family=%-6d q<.05=%-2d pos=%-2d CI>0=%-2d med=%.2f\n",
+      lab, n, attr(r, "family_size"), sum(q[k] < .05),
+      sum(r$beta[k] > 0), sum(r$ci_lo[k] > 0), median(r$beta[k])))
   invisible(data.frame(analysis = lab, n = n, q_lt_05 = sum(q[k] < .05),
                        positive = sum(r$beta[k] > 0), ci_excl0 = sum(r$ci_lo[k] > 0),
                        beta_med = round(median(r$beta[k]), 3)))
