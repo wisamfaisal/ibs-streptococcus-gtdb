@@ -1,10 +1,26 @@
 # raw third-party data - download from original repositories
 data_raw/
+raw_fastq/
+kraken_reports/
+optional_datasets/
+
+# reference summaries and proposal - not for publication
+Sours/
+_Proposal/
+
+# manuscript - not published until the journal decides
+Paper1_Streptococcus_IBS/manuscript/
+*.docx
 
 # large or superseded outputs
 results/**/fits/
+results/**/features/
+results/**/_archive/
 results/_archive_superseded/
+results_figures/_archive*/
 *.RData
+*.hdf5
+*.RDataTmp*
 
 # flagged, must never be published
 *TRUNCATED*
@@ -14,3 +30,4 @@ PRJNA612180_metadata.RData
 .Rhistory
 .Rproj.user/
 .Rdata
+*.Rproj
